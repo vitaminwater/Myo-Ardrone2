@@ -1,0 +1,93 @@
+#!/Users/stant/.virtualenvs/myo/bin/python
+
+import json
+import math
+
+from ws4py.messaging import TextMessage
+from ws4py.client.threadedclient import WebSocketClient
+
+import libardrone
+
+import state
+
+# ["event",{"accelerometer":[0.11669921875,-0.2333984375,0.96435546875],"gyroscope":[-18.5625,22.125,-35.75],"myo":0,"orientation":{"w":0.94482421875,"x":-0.20526123046875,"y":0.02777099609375,"z":-0.25360107421875},"timestamp":"187459377318","type":"orientation"}]
+
+### drone states
+
+class TakeOffState(state.BaseState):
+
+    def __init__(self, drone, *args, **kwargs):
+        super(TakeOffState, self).__init__(*args, **kwargs)
+        self._priority = 42
+        self._drone = drone
+
+    def start(self, data):
+        self._drone.takeoff()
+
+    def update(self, data):
+        return False
+
+    def end(self, data=None):
+        pass
+
+    def should_trigger(self, data):
+        if data[0] != 'event':
+            return False
+        event = data[1]
+        if self._drone.last_command_is_hovering == False and event['type'] == 'pose' and event['pose'] == 'fist':
+            return True
+        return False
+
+### Myo events
+
+class MyoDrone(WebSocketClient):
+
+    def __init__(self):
+        super(MyoDrone, self).__init__('ws://127.0.0.1:10138/myo/2', protocols=['http-only', 'chat'])
+        self._drone = libardrone.ARDrone2()
+        self._state_machine = StateMachine()
+        self._state_machine.add_state(TakeOffState(self._drone))
+
+
+    def _orientation_diff(self, axe):
+        refval = float(self.reference_orientation[axe])
+        lastval = float(self.last_orientation[axe])
+
+        value = refval - lastval
+
+        if math.fabs(value) > 1:
+            value = value - 2 if refval > 0 else value + 2
+
+        return value
+
+    def orientation(self, data):
+        self.last_orientation = data['orientation']
+        if self.current_pose == 'fist':
+            x = self._orientation_diff('x') # wirst axe ?
+            y = self._orientation_diff('y') # up/down
+            z = self._orientation_diff('z') # left/right
+
+            print('{0: <20} {1: <20} {2: <20}'.format(x, y, z))
+
+            if math.fabs(z) > 0.01:
+                if z < 0:
+                    drone.turn_left()
+                elif z > 0:
+                    drone.turn_right()
+
+            if math.fabs(y) > 0.01:
+                if y < 0:
+                    drone.move_down()
+                elif y > 0:
+                    drone.move_up()
+        self.reference_orientation = self.last_orientation
+
+### Websocket client
+
+if __name__ == '__main__':
+    try:
+        ws = MyoDrone()
+        ws.connect()
+        ws.run_forever()
+    except KeyboardInterrupt:
+        ws.close()
